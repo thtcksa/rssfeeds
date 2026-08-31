@@ -27,6 +27,7 @@ from playwright.sync_api import sync_playwright
 
 OUTPUT_FILE = Path(__file__).parent / "combined_news.xml"
 LOG_FILE = Path(__file__).parent / "run_log.txt"
+SEEN_FILE = Path(__file__).parent / "seen_links.txt"
 
 # Only items whose title or summary contain at least one of these keywords
 # will be kept in the final feed. Edit this list to adjust what gets through.
@@ -67,6 +68,19 @@ def render_with_browser(url: str, wait_ms: int = 2500) -> str:
         content = page.content()
         browser.close()
         return content
+
+
+# ---------------------------------------------------------------------------
+# Seen Links Helpers
+# ---------------------------------------------------------------------------
+def load_seen_links() -> set[str]:
+    if not SEEN_FILE.exists():
+        return set()
+    return set(SEEN_FILE.read_text(encoding="utf-8").splitlines())
+
+
+def save_seen_links(seen: set[str]) -> None:
+    SEEN_FILE.write_text("\n".join(seen), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -204,20 +218,54 @@ def scrape_jeddah() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Logging Function
+# Advanced Logging System (Daily Totals & Formatting)
 # ---------------------------------------------------------------------------
 def log_execution_status(status: str, count: int) -> None:
     now = datetime.datetime.now()
-    date_str = now.strftime("%d-%m-%Y")
+    today_str = now.strftime("%d-%m-%Y")
     time_str = now.strftime("%H:%M")
 
-    # Format: Day=(D- M- Y) - Time 24 style - Status (Work/Failed) - Number of news
-    log_line = f"{date_str} - {time_str} - {status} - {count}\n"
+    new_line = f"{today_str} - {time_str} - {status} - {count}\n"
 
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(log_line)
+    if not LOG_FILE.exists():
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            f.write(new_line)
+        print(f"Logged run: {new_line.strip()}")
+        return
 
-    print(f"Logged run: {log_line.strip()}")
+    lines = LOG_FILE.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            f.write(new_line)
+        print(f"Logged run: {new_line.strip()}")
+        return
+
+    # Check last logged entry's date
+    last_line = lines[-1]
+    last_date = None
+    if " - " in last_line:
+        last_date = last_line.split(" - ")[0].strip()
+
+    # If new day detected, summarize previous day first
+    if last_date and last_date != today_str and not last_date.startswith("-"):
+        daily_total = 0
+        for line in reversed(lines):
+            if line.startswith(last_date) and "total" not in line and " - " in line:
+                parts = line.split(" - ")
+                if len(parts) >= 4 and parts[3].isdigit():
+                    daily_total += int(parts[3])
+            elif not line.startswith(last_date):
+                break
+
+        summary_line = f"{last_date} - total {daily_total}"
+        separator = "----------------------"
+        
+        lines.append(summary_line)
+        lines.append(separator)
+
+    lines.append(new_line.strip())
+    LOG_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Logged run: {new_line.strip()}")
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +304,6 @@ def build_rss(all_items: list[dict]) -> None:
 
 def main():
     all_items = []
-    status = "Work"
 
     try:
         print("Scraping eamana.gov.sa ...")
@@ -297,8 +344,16 @@ def main():
             log_execution_status("Work", 0)
             return
 
+        seen_links = load_seen_links()
+        new_items = [item for item in filtered_items if item["link"] not in seen_links]
+        new_count = len(new_items)
+
+        for item in filtered_items:
+            seen_links.add(item["link"])
+        save_seen_links(seen_links)
+
         build_rss(filtered_items)
-        log_execution_status("Work", len(filtered_items))
+        log_execution_status("Work", new_count)
 
     except Exception as e:
         print(f"Execution encountered an error: {e}")

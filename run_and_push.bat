@@ -2,7 +2,7 @@
 cd /d "%~dp0"
 
 echo Running scraper...
-docker run --rm -v "%cd%":/app -w /app mcr.microsoft.com/playwright/python:v1.62.0-jammy bash -c "pip install beautifulsoup4 playwright requests -q && python combined_rss.py"
+docker run --rm -v "%cd%":/app -w /app mcr.microsoft.com/playwright/python:v1.62.0-jammy bash -c "pip install beautifulsoup4 playwright requests -q --disable-pip-version-check && python combined_rss.py"
 
 echo.
 echo Pushing to GitHub...
