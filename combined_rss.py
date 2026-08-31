@@ -26,6 +26,7 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 OUTPUT_FILE = Path(__file__).parent / "combined_news.xml"
+LOG_FILE = Path(__file__).parent / "run_log.txt"
 
 # Only items whose title or summary contain at least one of these keywords
 # will be kept in the final feed. Edit this list to adjust what gets through.
@@ -45,6 +46,7 @@ KEYWORD_WHITELIST = [
 def matches_whitelist(item: dict) -> bool:
     text = f"{item.get('title', '')} {item.get('summary', '')}"
     return any(keyword in text for keyword in KEYWORD_WHITELIST)
+
 
 HEADERS = {
     "User-Agent": (
@@ -113,8 +115,6 @@ def scrape_alriyadh() -> list[dict]:
     soup = BeautifulSoup(resp.text, "html.parser")
     items = []
 
-    # Each news block has an <h2> title followed later by a date (YYYY-MM-DD)
-    # and a "التفاصيل" (read more) link pointing at the article.
     date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
     for more_link in soup.find_all("a", string="التفاصيل"):
@@ -122,8 +122,6 @@ def scrape_alriyadh() -> list[dict]:
         if link.startswith("/"):
             link = "https://www.alriyadh.gov.sa" + link
 
-        # Walk backwards through previous siblings/elements to find the
-        # nearest h2 (title) and date text.
         title = None
         date_text = None
         block = more_link
@@ -150,8 +148,6 @@ def scrape_alriyadh() -> list[dict]:
                 }
             )
 
-    # De-duplicate (title appears both as a heading link and inside the
-    # card, so the same article can otherwise show up twice).
     seen = set()
     deduped = []
     for item in items:
@@ -172,9 +168,6 @@ def scrape_jeddah() -> list[dict]:
     soup = BeautifulSoup(page_html, "html.parser")
     items = []
 
-    # News cards live inside div#NewsTable, each card is a
-    # div.CustomCardAllAuto containing an h3 (title), p (summary),
-    # a date span, and a "المزيد" (read more) link.
     news_table = soup.find(id="NewsTable")
     container = news_table if news_table else soup
 
@@ -200,7 +193,6 @@ def scrape_jeddah() -> list[dict]:
             }
         )
 
-    # De-duplicate by link
     seen = set()
     deduped = []
     for item in items:
@@ -209,6 +201,23 @@ def scrape_jeddah() -> list[dict]:
             deduped.append(item)
 
     return deduped
+
+
+# ---------------------------------------------------------------------------
+# Logging Function
+# ---------------------------------------------------------------------------
+def log_execution_status(status: str, count: int) -> None:
+    now = datetime.datetime.now()
+    date_str = now.strftime("%d-%m-%Y")
+    time_str = now.strftime("%H:%M")
+
+    # Format: Day=(D- M- Y) - Time 24 style - Status (Work/Failed) - Number of news
+    log_line = f"{date_str} - {time_str} - {status} - {count}\n"
+
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(log_line)
+
+    print(f"Logged run: {log_line.strip()}")
 
 
 # ---------------------------------------------------------------------------
@@ -247,44 +256,53 @@ def build_rss(all_items: list[dict]) -> None:
 
 def main():
     all_items = []
+    status = "Work"
 
-    print("Scraping eamana.gov.sa ...")
     try:
-        eamana_items = scrape_eamana()
-        print(f"  -> {len(eamana_items)} items")
-        all_items.extend(eamana_items)
+        print("Scraping eamana.gov.sa ...")
+        try:
+            eamana_items = scrape_eamana()
+            print(f"  -> {len(eamana_items)} items")
+            all_items.extend(eamana_items)
+        except Exception as e:
+            print(f"  !! eamana failed: {e}")
+
+        print("Scraping alriyadh.gov.sa ...")
+        try:
+            alriyadh_items = scrape_alriyadh()
+            print(f"  -> {len(alriyadh_items)} items")
+            all_items.extend(alriyadh_items)
+        except Exception as e:
+            print(f"  !! alriyadh failed: {e}")
+
+        print("Scraping jeddah.gov.sa ...")
+        try:
+            jeddah_items = scrape_jeddah()
+            print(f"  -> {len(jeddah_items)} items")
+            all_items.extend(jeddah_items)
+        except Exception as e:
+            print(f"  !! jeddah failed: {e}")
+
+        if not all_items:
+            print("No items found from any site.")
+            log_execution_status("Failed", 0)
+            return
+
+        print(f"Total items before filtering: {len(all_items)}")
+        filtered_items = [item for item in all_items if matches_whitelist(item)]
+        print(f"Total items after keyword filtering: {len(filtered_items)}")
+
+        if not filtered_items:
+            print("No items matched the keyword whitelist. Feed not updated.")
+            log_execution_status("Work", 0)
+            return
+
+        build_rss(filtered_items)
+        log_execution_status("Work", len(filtered_items))
+
     except Exception as e:
-        print(f"  !! eamana failed: {e}")
-
-    print("Scraping alriyadh.gov.sa ...")
-    try:
-        alriyadh_items = scrape_alriyadh()
-        print(f"  -> {len(alriyadh_items)} items")
-        all_items.extend(alriyadh_items)
-    except Exception as e:
-        print(f"  !! alriyadh failed: {e}")
-
-    print("Scraping jeddah.gov.sa ...")
-    try:
-        jeddah_items = scrape_jeddah()
-        print(f"  -> {len(jeddah_items)} items")
-        all_items.extend(jeddah_items)
-    except Exception as e:
-        print(f"  !! jeddah failed: {e}")
-
-    if not all_items:
-        print("No items found from any site.")
-        return
-
-    print(f"Total items before filtering: {len(all_items)}")
-    filtered_items = [item for item in all_items if matches_whitelist(item)]
-    print(f"Total items after keyword filtering: {len(filtered_items)}")
-
-    if not filtered_items:
-        print("No items matched the keyword whitelist. Feed not updated.")
-        return
-
-    build_rss(filtered_items)
+        print(f"Execution encountered an error: {e}")
+        log_execution_status("Failed", 0)
 
 
 if __name__ == "__main__":
