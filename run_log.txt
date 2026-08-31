@@ -1,0 +1,13 @@
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+
+[notice] A new release of pip is available: 26.2 -> 26.2.1
+[notice] To update, run: python -m pip install --upgrade pip
+Scraping eamana.gov.sa ...
+  -> 8 items
+Scraping alriyadh.gov.sa ...
+  -> 6 items
+Scraping jeddah.gov.sa ...
+  -> 30 items
+Total items before filtering: 44
+Total items after keyword filtering: 6
+Wrote 6 total items to /app/combined_news.xml
