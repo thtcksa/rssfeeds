@@ -27,27 +27,83 @@ from playwright.sync_api import sync_playwright
 
 OUTPUT_FILE = Path(__file__).parent / "combined_news.xml"
 LOG_FILE = Path(__file__).parent / "run_log.txt"
-SEEN_FILE = Path(__file__).parent / "seen_links.txt"
+SEEN_LINKS_FILE = Path(__file__).parent / "seen_links.txt"
+
+
+def log_run(status: str, new_count) -> None:
+    now = datetime.datetime.now()
+    date_str = now.strftime("%d-%m-%Y")
+    time_str = now.strftime("%H:%M")
+    line = f"{date_str} - {time_str} - {status} - {new_count}"
+    print(line)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def load_seen_links() -> set:
+    if not SEEN_LINKS_FILE.exists():
+        return set()
+    return set(SEEN_LINKS_FILE.read_text(encoding="utf-8").splitlines())
+
+
+def save_seen_links(links: set) -> None:
+    SEEN_LINKS_FILE.write_text("\n".join(sorted(links)), encoding="utf-8")
 
 # Only items whose title or summary contain at least one of these keywords
 # will be kept in the final feed. Edit this list to adjust what gets through.
 KEYWORD_WHITELIST = [
+    # Closures & diversions
     "إغلاق",
+    "إعادة فتح",
+    "تحويلة",
+    "تحويل مروري",
+    "إغلاق مؤقت",
+    # Openings & expansion
     "افتتاح",
+    "توسعة",
+    "ازدواجية",
+    "ربط",
+    "طريق جديد",
+    "شارع جديد",
+    # Infrastructure & traffic flow
+    "إشارة مرورية",
+    "دوار",
+    "تقاطع",
+    "جسر",
+    "نفق",
+    "انسيابية المرور",
+    "تخفيف الازدحام",
+    "مسار",
+    "حارة",
+    # General road/street/development terms
     "طريق",
     "شارع",
     "تطوير",
     "بالتعاون مع المرور",
     "بالتنسيق مع المرور",
     "إشارة",
-    "دوار",
+    # English equivalents
+    "road closure",
+    "road opening",
+    "reopening",
+    "detour",
+    "diversion",
+    "roundabout",
+    "intersection",
+    "bridge",
+    "tunnel",
+    "overpass",
+    "underpass",
+    "widening",
+    "dualization",
+    "expansion",
+    "traffic signal",
 ]
 
 
 def matches_whitelist(item: dict) -> bool:
     text = f"{item.get('title', '')} {item.get('summary', '')}"
     return any(keyword in text for keyword in KEYWORD_WHITELIST)
-
 
 HEADERS = {
     "User-Agent": (
@@ -68,19 +124,6 @@ def render_with_browser(url: str, wait_ms: int = 2500) -> str:
         content = page.content()
         browser.close()
         return content
-
-
-# ---------------------------------------------------------------------------
-# Seen Links Helpers
-# ---------------------------------------------------------------------------
-def load_seen_links() -> set[str]:
-    if not SEEN_FILE.exists():
-        return set()
-    return set(SEEN_FILE.read_text(encoding="utf-8").splitlines())
-
-
-def save_seen_links(seen: set[str]) -> None:
-    SEEN_FILE.write_text("\n".join(seen), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -125,43 +168,53 @@ def scrape_eamana() -> list[dict]:
 # ---------------------------------------------------------------------------
 def scrape_alriyadh() -> list[dict]:
     url = "https://www.alriyadh.gov.sa/ar/news"
+    base = "https://www.alriyadh.gov.sa"
     resp = requests.get(url, headers=HEADERS, timeout=30)
     soup = BeautifulSoup(resp.text, "html.parser")
     items = []
 
+    # Match links whose href follows the pattern /ar/news/riyadh-news-<id>
+    # This is more robust than matching button text (which has changed
+    # before, e.g. "التفاصيل" -> "اقرأ المزيد").
     date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    news_links = soup.find_all("a", href=re.compile(r"/ar/news/riyadh-news-\d+"))
 
-    for more_link in soup.find_all("a", string="التفاصيل"):
-        link = more_link["href"]
+    for link_tag in news_links:
+        link = link_tag["href"]
         if link.startswith("/"):
-            link = "https://www.alriyadh.gov.sa" + link
+            link = base + link
 
-        title = None
+        title = link_tag.get_text(strip=True)
+        # Some <a> tags wrap only an image with no text (the thumbnail
+        # link); skip those and rely on the text-bearing duplicate link
+        # further down the page instead.
+        if not title:
+            continue
+
+        # Look for a nearby date (YYYY-MM-DD) near this link
         date_text = None
-        block = more_link
-        for _ in range(15):
-            block = block.find_previous(["h2", "p"])
+        block = link_tag
+        for _ in range(10):
+            block = block.find_next(["p", "span"])
             if block is None:
                 break
             text = block.get_text(strip=True)
-            if title is None and block.name == "h2" and text:
-                title = text
-            if date_text is None and date_pattern.match(text):
+            if date_pattern.match(text):
                 date_text = text
-            if title and date_text:
                 break
 
-        if title:
-            items.append(
-                {
-                    "title": title,
-                    "summary": "",
-                    "link": link,
-                    "source": "أمانة منطقة الرياض",
-                    "date_text": date_text,
-                }
-            )
+        items.append(
+            {
+                "title": title,
+                "summary": "",
+                "link": link,
+                "source": "أمانة منطقة الرياض",
+                "date_text": date_text,
+            }
+        )
 
+    # De-duplicate (same article often appears twice: once as an image
+    # link, once as a text link)
     seen = set()
     deduped = []
     for item in items:
@@ -182,6 +235,9 @@ def scrape_jeddah() -> list[dict]:
     soup = BeautifulSoup(page_html, "html.parser")
     items = []
 
+    # News cards live inside div#NewsTable, each card is a
+    # div.CustomCardAllAuto containing an h3 (title), p (summary),
+    # a date span, and a "المزيد" (read more) link.
     news_table = soup.find(id="NewsTable")
     container = news_table if news_table else soup
 
@@ -207,6 +263,7 @@ def scrape_jeddah() -> list[dict]:
             }
         )
 
+    # De-duplicate by link
     seen = set()
     deduped = []
     for item in items:
@@ -215,57 +272,6 @@ def scrape_jeddah() -> list[dict]:
             deduped.append(item)
 
     return deduped
-
-
-# ---------------------------------------------------------------------------
-# Advanced Logging System (Daily Totals & Formatting)
-# ---------------------------------------------------------------------------
-def log_execution_status(status: str, count: int) -> None:
-    now = datetime.datetime.now()
-    today_str = now.strftime("%d-%m-%Y")
-    time_str = now.strftime("%H:%M")
-
-    new_line = f"{today_str} - {time_str} - {status} - {count}\n"
-
-    if not LOG_FILE.exists():
-        with open(LOG_FILE, "w", encoding="utf-8") as f:
-            f.write(new_line)
-        print(f"Logged run: {new_line.strip()}")
-        return
-
-    lines = LOG_FILE.read_text(encoding="utf-8").splitlines()
-    if not lines:
-        with open(LOG_FILE, "w", encoding="utf-8") as f:
-            f.write(new_line)
-        print(f"Logged run: {new_line.strip()}")
-        return
-
-    # Check last logged entry's date
-    last_line = lines[-1]
-    last_date = None
-    if " - " in last_line:
-        last_date = last_line.split(" - ")[0].strip()
-
-    # If new day detected, summarize previous day first
-    if last_date and last_date != today_str and not last_date.startswith("-"):
-        daily_total = 0
-        for line in reversed(lines):
-            if line.startswith(last_date) and "total" not in line and " - " in line:
-                parts = line.split(" - ")
-                if len(parts) >= 4 and parts[3].isdigit():
-                    daily_total += int(parts[3])
-            elif not line.startswith(last_date):
-                break
-
-        summary_line = f"{last_date} - total {daily_total}"
-        separator = "----------------------"
-        
-        lines.append(summary_line)
-        lines.append(separator)
-
-    lines.append(new_line.strip())
-    LOG_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"Logged run: {new_line.strip()}")
 
 
 # ---------------------------------------------------------------------------
@@ -304,60 +310,58 @@ def build_rss(all_items: list[dict]) -> None:
 
 def main():
     all_items = []
+    any_failure = False
 
+    print("Scraping eamana.gov.sa ...")
     try:
-        print("Scraping eamana.gov.sa ...")
-        try:
-            eamana_items = scrape_eamana()
-            print(f"  -> {len(eamana_items)} items")
-            all_items.extend(eamana_items)
-        except Exception as e:
-            print(f"  !! eamana failed: {e}")
-
-        print("Scraping alriyadh.gov.sa ...")
-        try:
-            alriyadh_items = scrape_alriyadh()
-            print(f"  -> {len(alriyadh_items)} items")
-            all_items.extend(alriyadh_items)
-        except Exception as e:
-            print(f"  !! alriyadh failed: {e}")
-
-        print("Scraping jeddah.gov.sa ...")
-        try:
-            jeddah_items = scrape_jeddah()
-            print(f"  -> {len(jeddah_items)} items")
-            all_items.extend(jeddah_items)
-        except Exception as e:
-            print(f"  !! jeddah failed: {e}")
-
-        if not all_items:
-            print("No items found from any site.")
-            log_execution_status("Failed", 0)
-            return
-
-        print(f"Total items before filtering: {len(all_items)}")
-        filtered_items = [item for item in all_items if matches_whitelist(item)]
-        print(f"Total items after keyword filtering: {len(filtered_items)}")
-
-        if not filtered_items:
-            print("No items matched the keyword whitelist. Feed not updated.")
-            log_execution_status("Work", 0)
-            return
-
-        seen_links = load_seen_links()
-        new_items = [item for item in filtered_items if item["link"] not in seen_links]
-        new_count = len(new_items)
-
-        for item in filtered_items:
-            seen_links.add(item["link"])
-        save_seen_links(seen_links)
-
-        build_rss(filtered_items)
-        log_execution_status("Work", new_count)
-
+        eamana_items = scrape_eamana()
+        print(f"  -> {len(eamana_items)} items")
+        all_items.extend(eamana_items)
     except Exception as e:
-        print(f"Execution encountered an error: {e}")
-        log_execution_status("Failed", 0)
+        print(f"  !! eamana failed: {e}")
+        any_failure = True
+
+    print("Scraping alriyadh.gov.sa ...")
+    try:
+        alriyadh_items = scrape_alriyadh()
+        print(f"  -> {len(alriyadh_items)} items")
+        all_items.extend(alriyadh_items)
+    except Exception as e:
+        print(f"  !! alriyadh failed: {e}")
+        any_failure = True
+
+    print("Scraping jeddah.gov.sa ...")
+    try:
+        jeddah_items = scrape_jeddah()
+        print(f"  -> {len(jeddah_items)} items")
+        all_items.extend(jeddah_items)
+    except Exception as e:
+        print(f"  !! jeddah failed: {e}")
+        any_failure = True
+
+    if not all_items:
+        print("No items found from any site.")
+        log_run("Failed", 0)
+        return
+
+    print(f"Total items before filtering: {len(all_items)}")
+    filtered_items = [item for item in all_items if matches_whitelist(item)]
+    print(f"Total items after keyword filtering: {len(filtered_items)}")
+
+    # Figure out how many of today's matches are genuinely new vs last run
+    seen_links = load_seen_links()
+    current_links = {item["link"] for item in filtered_items}
+    new_links = current_links - seen_links
+    new_count = len(new_links)
+
+    if filtered_items:
+        build_rss(filtered_items)
+        save_seen_links(current_links)
+    else:
+        print("No items matched the keyword whitelist. Feed not updated.")
+
+    status = "Failed" if any_failure else "Work"
+    log_run(status, new_count)
 
 
 if __name__ == "__main__":
