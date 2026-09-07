@@ -51,13 +51,21 @@ def save_seen_links(links: set) -> None:
 
 # Only items whose title or summary contain at least one of these keywords
 # will be kept in the final feed. Edit this list to adjust what gets through.
+# Updated based on frequency analysis of 18 real municipal news articles
+# (see road_keywords_analysis.xlsx for the full breakdown).
 KEYWORD_WHITELIST = [
     # Closures & diversions
     "إغلاق",
-    "إعادة فتح",
+    "تعيد افتتاح",
+    "أعادت فتح",
+    "أعادت... فتح",
     "تحويلة",
     "تحويل مروري",
+    "تحويل الحركة",
+    "تحويل حركة المركبات",
     "إغلاق مؤقت",
+    "إغلاق جزئي",
+    "إغلاق كلي",
     # Openings & expansion
     "افتتاح",
     "توسعة",
@@ -72,15 +80,24 @@ KEYWORD_WHITELIST = [
     "جسر",
     "نفق",
     "انسيابية المرور",
+    "انسيابية",
     "تخفيف الازدحام",
     "مسار",
     "حارة",
+    # Maintenance & efficiency (high-frequency terms confirmed by corpus analysis)
+    "صيانة",
+    "رفع كفاءة",
+    "تأهيل",
+    "إعادة تأهيل",
+    "سفلتة",
     # General road/street/development terms
     "طريق",
     "شارع",
     "تطوير",
     "بالتعاون مع المرور",
     "بالتنسيق مع المرور",
+    "إدارة مرور",
+    "مرور المنطقة",
     "إشارة",
     # English equivalents
     "road closure",
@@ -98,6 +115,7 @@ KEYWORD_WHITELIST = [
     "dualization",
     "expansion",
     "traffic signal",
+    "maintenance",
 ]
 
 
