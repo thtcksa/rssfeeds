@@ -1,8 +1,9 @@
 """
-Combined RSS feed generator for three Saudi municipal news sites:
+Combined RSS feed generator for four Saudi government news sites:
   - eamana.gov.sa      (JS-rendered React app)
   - alriyadh.gov.sa    (server-rendered Next.js, no JS needed)
   - jeddah.gov.sa      (JS/AJAX-loaded content)
+  - rcrc.gov.sa        (Royal Commission for Riyadh City, server-rendered)
 
 Produces ONE merged file: combined_news.xml (RSS 2.0), with a
 <source> field on the description so you can tell which site each
@@ -293,6 +294,54 @@ def scrape_jeddah() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# 4) rcrc.gov.sa -- Royal Commission for Riyadh City, server-rendered
+# ---------------------------------------------------------------------------
+def scrape_rcrc() -> list[dict]:
+    url = "https://www.rcrc.gov.sa/news-ar/"
+    resp = requests.get(url, headers=HEADERS, timeout=30)
+    soup = BeautifulSoup(resp.text, "html.parser")
+    items = []
+
+    # Each news card has an <h3> containing a link to the article, followed
+    # by a date line such as "الخميس، 8 أكتوبر، 2026".
+    date_pattern = re.compile(r"\d{1,2}\s*\S+،\s*20\d\d")
+
+    for h3 in soup.find_all("h3"):
+        a = h3.find("a", href=True)
+        if not a:
+            continue
+
+        title = a.get_text(strip=True)
+        link = a["href"]
+        if link.startswith("/"):
+            link = "https://www.rcrc.gov.sa" + link
+        if not title or "rcrc.gov.sa" not in link:
+            continue
+
+        date_node = h3.find_next(string=date_pattern)
+        summary = date_node.strip() if date_node else ""
+
+        items.append(
+            {
+                "title": title,
+                "summary": summary,
+                "link": link,
+                "source": "الهيئة الملكية لمدينة الرياض",
+            }
+        )
+
+    # De-duplicate by link
+    seen = set()
+    deduped = []
+    for item in items:
+        if item["link"] not in seen:
+            seen.add(item["link"])
+            deduped.append(item)
+
+    return deduped
+
+
+# ---------------------------------------------------------------------------
 # RSS building
 # ---------------------------------------------------------------------------
 def build_rss(all_items: list[dict]) -> None:
@@ -317,7 +366,7 @@ def build_rss(all_items: list[dict]) -> None:
   <channel>
     <title>أخبار الأمانات - مجمعة</title>
     <link>https://example.com</link>
-    <description>خلاصة مجمعة من أمانة المنطقة الشرقية، أمانة الرياض، وأمانة جدة</description>
+    <description>خلاصة مجمعة من أمانة المنطقة الشرقية، أمانة الرياض، أمانة جدة، والهيئة الملكية لمدينة الرياض</description>
     <language>ar</language>{entries}
   </channel>
 </rss>
@@ -355,6 +404,15 @@ def main():
         all_items.extend(jeddah_items)
     except Exception as e:
         print(f"  !! jeddah failed: {e}")
+        any_failure = True
+
+    print("Scraping rcrc.gov.sa ...")
+    try:
+        rcrc_items = scrape_rcrc()
+        print(f"  -> {len(rcrc_items)} items")
+        all_items.extend(rcrc_items)
+    except Exception as e:
+        print(f"  !! rcrc failed: {e}")
         any_failure = True
 
     if not all_items:
